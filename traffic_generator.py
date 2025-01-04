@@ -4,6 +4,7 @@ import random
 import string
 import time
 import argparse
+from aiohttp_socks import ProxyConnector, ProxyType
 
 # A list of User-Agents to simulate different clients
 USER_AGENTS = [
@@ -23,7 +24,8 @@ def load_proxies_from_file(filepath: str):
             for line in f:
                 line = line.strip()
                 # If the line does not start with "http://" or "https://", add it here (as needed)
-                if not line.startswith("http"):
+                if not line.startswith(("http://", "https://", "socks4://", "socks5://")):
+                    # Default to HTTP proxy if no scheme is provided
                     line = "http://" + line
                 proxies.append(line)
     except FileNotFoundError:
@@ -40,7 +42,7 @@ def generate_random_cookie():
     cookie_value = "".join(random.choices(string.ascii_letters + string.digits, k=16))
     return {cookie_name: cookie_value}
 
-async def make_request(session: aiohttp.ClientSession, url: str, proxy: str):
+async def make_request(url: str, proxy: str):
     """Performs a GET request to the video URL using the given proxy address."""
     headers = {
         "User-Agent": random.choice(USER_AGENTS)
@@ -53,27 +55,40 @@ async def make_request(session: aiohttp.ClientSession, url: str, proxy: str):
     
     try:
         await asyncio.sleep(random_sleep_time)
-        async with session.get(
-            url,
-            headers=headers,
-            proxy=proxy,
-            timeout=10,
-            cookies=random_cookies
-        ) as response:
-            status_code = response.status
-            text = await response.text()
-            return status_code, text
+        
+        # Determine the proxy type based on the proxy URL scheme
+        if proxy.startswith("socks5://"):
+            proxy_type = ProxyType.SOCKS5
+        elif proxy.startswith("socks4://"):
+            proxy_type = ProxyType.SOCKS4
+        elif proxy.startswith("https://"):
+            proxy_type = ProxyType.HTTP
+        else:
+            proxy_type = ProxyType.HTTP  # Default to HTTP for "http://"
+
+        # Create a ProxyConnector based on the proxy type
+        connector = ProxyConnector.from_url(proxy, proxy_type=proxy_type)
+
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=10,
+                cookies=random_cookies
+            ) as response:
+                status_code = response.status
+                text = await response.text()
+                return status_code, text
     except Exception as e:
         return None, str(e)
 
 async def worker(url: str, proxies: list):
     """An asynchronous worker that sequentially processes all proxies."""
-    async with aiohttp.ClientSession() as session:
-        results = []
-        for proxy in proxies:
-            status, data = await make_request(session, url, proxy)
-            results.append((proxy, status, data))
-        return results
+    results = []
+    for proxy in proxies:
+        status, data = await make_request(url, proxy)
+        results.append((proxy, status, data))
+    return results
 
 async def main(video_url: str, proxies: list, concurrent_workers: int = 1):
     """
